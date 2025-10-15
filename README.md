@@ -1,4 +1,4 @@
-# rsrc_full_parser_ida92_nostructs
+# rsrc_parser
 
 A compact IDA Python script that parses the **.rsrc** section of PE executables in **IDA 9.2**.  
 It types and comments all common Windows resources — dialogs, strings, menus, accelerators, versions, etc.  
