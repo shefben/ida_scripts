@@ -16,6 +16,10 @@ Together, they allow both **formatting and visualization** of Windows resources 
   <a href="previews/rsrc_formatter.png" title="rsrc_formatter preview (full size)">
     <img src="previews/rsrc_formatter.png" alt="rsrc_formatter preview" width="420">
   </a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="previews/gui_annotation.png" title="gui_annotation preview (full size)">
+    <img src="previews/gui_annotation.png" alt="gui_annotation preview" width="420">
+  </a>
 </p>
 
 - Click either thumbnail to open the full-size image.
@@ -48,6 +52,21 @@ It scans the parsed `.rsrc` section and displays a navigable tree of resource en
 - Decodes version info, accelerators, and string tables.  
 - Integrates with IDA logging and runs as script or plugin (`run()` entry point).  
 - Depends on `PySide6` and optionally `Pillow` for image handling.
+
+---
+
+### `gui_annotation.py`
+An **IDA 9.2 plugin and script** that automatically scans Windows GUI binaries and annotates assembly and pseudocode with context-aware comments for dialogs, controls, and message-handling routines.  
+It bridges `.rsrc` parsing with code analysis to reveal how GUI components connect to functions and message maps.
+
+**Key features**
+- Automatically locates and indexes controls, menus, and dialog resources from `.rsrc`.  
+- Adds comments for `WM_*` messages, `IDS_*` strings, and GUI-related API calls (`CreateDialogParam`, `SendMessage`, etc.).  
+- Identifies MFC and ATL message handlers (`OnCommand`, `OnNotify`, etc.) and annotates their references.  
+- Supports both x86 and x64 binaries and uses backtracking to resolve register and stack-based arguments.  
+- Integrates with Hex-Rays to show GUI comments inline in pseudocode when available.  
+- Can be run as an **IDA plugin** or a **stand-alone script**, requiring no external dependencies.  
+- Designed for performance and readability, enhancing disassembly clarity when reverse engineering GUI-heavy Windows binaries.
 
 ---
 

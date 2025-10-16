@@ -10,6 +10,7 @@
 # 7) Menu viewer: spawn native menu window; main pane shows RC script
 # 8) Cursor groups: thin right pane stacks cursors; main shows group entries text
 # 9) Icon groups: same as cursor groups
+import os
 
 import sys, struct, ctypes, traceback
 import idaapi, idc, idautils
@@ -20,6 +21,15 @@ from PySide6 import QtCore, QtGui, QtWidgets
 # ==== WINDOWS CTYPES COMPAT SHIMS (drop in once, near imports) ====
 import ctypes
 from ctypes import wintypes as _wt
+from ctypes import wintypes as _wtt
+
+icc = ctypes.c_ulong(0x0000FFFF)  # ICC_WIN95_CLASSES and friends
+class INITCOMMONCONTROLSEX(ctypes.Structure):
+    _fields_ = [("dwSize", _wtt.DWORD), ("dwICC", _wtt.DWORD)]
+_init = INITCOMMONCONTROLSEX(ctypes.sizeof(INITCOMMONCONTROLSEX), icc)
+
+ctypes.windll.comctl32.InitCommonControlsEx(ctypes.byref(_init))
+
 import io
 try:
     from PIL import Image
@@ -76,6 +86,27 @@ class MSG(ctypes.Structure):
     ]
 if not hasattr(_wt, "MSG"):
     _wt.MSG = MSG
+
+# Add RECT if not present
+if not hasattr(_wt, "RECT"):
+    from ctypes import wintypes as _wtt
+    _wt.RECT = _wtt.RECT
+
+# Prototypes we use below (explicit is better than magical)
+NativePreview.user32.GetWindowRect.argtypes = [_wt.HWND, ctypes.POINTER(_wt.RECT)]
+NativePreview.user32.GetWindowRect.restype  = _wt.BOOL
+
+NativePreview.user32.SetWindowPos.argtypes = [_wt.HWND, _wt.HWND,
+                                              ctypes.c_int, ctypes.c_int,
+                                              ctypes.c_int, ctypes.c_int,
+                                              _wt.UINT]
+NativePreview.user32.SetWindowPos.restype  = _wt.BOOL
+
+NativePreview.user32.GetWindow.argtypes = [_wt.HWND, _wt.UINT]
+NativePreview.user32.GetWindow.restype  = _wt.HWND
+
+NativePreview.user32.DestroyWindow.argtypes = [_wt.HWND]
+NativePreview.user32.DestroyWindow.restype  = _wt.BOOL
 
 # Proc signatures
 WNDPROC_T = ctypes.WINFUNCTYPE(_wt.LRESULT, _wt.HWND, _wt.UINT, _wt.WPARAM, _wt.LPARAM)
@@ -615,168 +646,241 @@ class NativePreview:
     user32   = ctypes.WinDLL("user32",   use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
-    # 64-bit safe VirtualAlloc prototype
-    kernel32.VirtualAlloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t,
-                                                    ctypes.c_ulong, ctypes.c_ulong]
+    kernel32.VirtualAlloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulong, ctypes.c_ulong]
     kernel32.VirtualAlloc.restype  = ctypes.c_void_p
-    
-    # Keep Python objects pinned
+
     _dlgprocs = []
     _wndprocs = []
-    _allocs   = []   # (ptr, size) from VirtualAlloc to keep alive
+    _allocs   = []
 
-    # Types
     WNDPROC = WNDPROC_T
     DLGPROC = DLGPROC_T
 
-    # Prototypes
+    # --- user32 prototypes used elsewhere (as you had) ---
     user32.CreateDialogIndirectParamW.argtypes = [_wt.HINSTANCE, _wt.LPCVOID, _wt.HWND, DLGPROC_T, _wt.LPARAM]
     user32.CreateDialogIndirectParamW.restype  = _wt.HWND
-
-    user32.DialogBoxIndirectParamW  = user32.DialogBoxIndirectParamW
-    user32.DialogBoxIndirectParamW.argtypes = [_wt.HINSTANCE, _wt.LPCVOID, _wt.HWND, DLGPROC_T, _wt.LPARAM]
-    user32.DialogBoxIndirectParamW.restype  = _wt.INT
-
-    user32.LoadMenuIndirectW.argtypes = [_wt.LPCVOID]
-    user32.LoadMenuIndirectW.restype  = _wt.HMENU
-
-    user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
-    user32.RegisterClassW.restype  = _wt.ATOM
-
+    user32.DialogBoxIndirectParamW.argtypes    = [_wt.HINSTANCE, _wt.LPCVOID, _wt.HWND, DLGPROC_T, _wt.LPARAM]
+    user32.DialogBoxIndirectParamW.restype     = _wt.INT
+    user32.LoadMenuIndirectW.argtypes          = [_wt.LPCVOID]
+    user32.LoadMenuIndirectW.restype           = _wt.HMENU
+    user32.RegisterClassW.argtypes             = [ctypes.POINTER(WNDCLASSW)]
+    user32.RegisterClassW.restype              = _wt.ATOM
     user32.CreateWindowExW.argtypes = [
         _wt.DWORD, _wt.LPCWSTR, _wt.LPCWSTR, _wt.DWORD,
         ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
         _wt.HWND, _wt.HMENU, _wt.HINSTANCE, _wt.LPVOID
     ]
     user32.CreateWindowExW.restype  = _wt.HWND
-
-    user32.DefWindowProcW.argtypes = [_wt.HWND, _wt.UINT, _wt.WPARAM, _wt.LPARAM]
-    user32.DefWindowProcW.restype  = _wt.LRESULT
-
-    user32.SetWindowTextW.argtypes = [_wt.HWND, _wt.LPCWSTR]
-    user32.SetWindowTextW.restype  = _wt.BOOL
-
-    user32.ShowWindow.argtypes = [_wt.HWND, ctypes.c_int]
-    user32.ShowWindow.restype  = _wt.BOOL
-
-    user32.UpdateWindow.argtypes = [_wt.HWND]
-    user32.UpdateWindow.restype  = _wt.BOOL
-
-    user32.SetMenu.argtypes = [_wt.HWND, _wt.HMENU]
-    user32.SetMenu.restype  = _wt.BOOL
-
+    user32.DefWindowProcW.argtypes  = [_wt.HWND, _wt.UINT, _wt.WPARAM, _wt.LPARAM]
+    user32.DefWindowProcW.restype   = _wt.LRESULT
+    user32.SetWindowTextW.argtypes  = [_wt.HWND, _wt.LPCWSTR]
+    user32.SetWindowTextW.restype   = _wt.BOOL
+    user32.ShowWindow.argtypes      = [_wt.HWND, ctypes.c_int]
+    user32.ShowWindow.restype       = _wt.BOOL
+    user32.UpdateWindow.argtypes    = [_wt.HWND]
+    user32.UpdateWindow.restype     = _wt.BOOL
+    user32.SetMenu.argtypes         = [_wt.HWND, _wt.HMENU]
+    user32.SetMenu.restype          = _wt.BOOL
     user32.PostQuitMessage.argtypes = [ctypes.c_int]
     user32.PostQuitMessage.restype  = None
+    user32.EndDialog.argtypes       = [_wt.HWND, _wt.INT]
+    user32.EndDialog.restype        = _wt.BOOL
+    user32.PeekMessageW.argtypes    = [ctypes.POINTER(_wt.MSG), _wt.HWND, _wt.UINT, _wt.UINT, _wt.UINT]
+    user32.PeekMessageW.restype     = _wt.BOOL
+    user32.TranslateMessage.argtypes= [ctypes.POINTER(_wt.MSG)]
+    user32.TranslateMessage.restype = _wt.BOOL
+    user32.DispatchMessageW.argtypes= [ctypes.POINTER(_wt.MSG)]
+    user32.DispatchMessageW.restype = _wt.LRESULT
 
-    user32.EndDialog.argtypes = [_wt.HWND, _wt.INT]
-    user32.EndDialog.restype  = _wt.BOOL
+    # --- extra prototypes we need for proper embedding ---
+    LONG_PTR = ctypes.c_longlong if _PTR64 else ctypes.c_long
 
-    user32.PeekMessageW.argtypes = [ctypes.POINTER(_wt.MSG), _wt.HWND, _wt.UINT, _wt.UINT, _wt.UINT]
-    user32.PeekMessageW.restype  = _wt.BOOL
-    user32.TranslateMessage.argtypes = [ctypes.POINTER(_wt.MSG)]
-    user32.TranslateMessage.restype  = _wt.BOOL
-    user32.DispatchMessageW.argtypes = [ctypes.POINTER(_wt.MSG)]
-    user32.DispatchMessageW.restype  = _wt.LRESULT
-    
+    user32.GetWindowRect.argtypes   = [_wt.HWND, ctypes.POINTER(_wt.RECT)]
+    user32.GetWindowRect.restype    = _wt.BOOL
+    user32.GetClientRect.argtypes   = [_wt.HWND, ctypes.POINTER(_wt.RECT)]
+    user32.GetClientRect.restype    = _wt.BOOL
+    user32.SetWindowPos.argtypes    = [_wt.HWND, _wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, _wt.UINT]
+    user32.SetWindowPos.restype     = _wt.BOOL
+    user32.MoveWindow.argtypes      = [_wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, _wt.BOOL]
+    user32.MoveWindow.restype       = _wt.BOOL
+    user32.GetWindow.argtypes       = [_wt.HWND, _wt.UINT]
+    user32.GetWindow.restype        = _wt.HWND
+    user32.DestroyWindow.argtypes   = [_wt.HWND]
+    user32.DestroyWindow.restype    = _wt.BOOL
+    user32.SetParent.argtypes       = [_wt.HWND, _wt.HWND]
+    user32.SetParent.restype        = _wt.HWND
+    user32.GetWindowLongPtrW.argtypes = [_wt.HWND, ctypes.c_int]
+    user32.GetWindowLongPtrW.restype  = LONG_PTR
+    user32.SetWindowLongPtrW.argtypes = [_wt.HWND, ctypes.c_int, LONG_PTR]
+    user32.SetWindowLongPtrW.restype  = LONG_PTR
+    user32.SendMessageW.argtypes    = [_wt.HWND, _wt.UINT, _wt.WPARAM, _wt.LPARAM]
+    user32.SendMessageW.restype     = _wt.LRESULT
+    user32.RedrawWindow.argtypes    = [_wt.HWND, ctypes.c_void_p, ctypes.c_void_p, _wt.UINT]
+    user32.RedrawWindow.restype     = _wt.BOOL
 
-    # VirtualAlloc helpers for aligned, page-backed buffers
-    PAGE_READWRITE   = 0x04
-    MEM_COMMIT       = 0x1000
-    MEM_RESERVE      = 0x2000
-    # in NativePreview
+    kernel32.GetModuleHandleW.argtypes = [_wt.LPCWSTR]
+    kernel32.GetModuleHandleW.restype  = _wt.HINSTANCE
+
+    # --- constants ---
+    PAGE_READWRITE = 0x04
+    MEM_COMMIT     = 0x1000
+    MEM_RESERVE    = 0x2000
+
+    GWL_STYLE      = -16
+    WS_CHILD       = 0x40000000
+    WS_POPUP       = 0x80000000
+    SWP_NOZORDER   = 0x0004
+    SWP_NOMOVE     = 0x0002
+    SWP_NOACTIVATE = 0x0010
+    SWP_FRAMECHANGED = 0x0020
+    RDW_INVALIDATE = 0x0001
+    RDW_ALLCHILDREN= 0x0080
+    RDW_ERASE      = 0x0004
+
     _open_hwnds = []
-
-    @staticmethod
-    def preview_dialog_hosted(template_bytes: bytes, title="Dialog Preview") -> bool:
-        # Frame window class
-        @NativePreview.WNDPROC
-        def host_wndproc(hwnd, msg, wparam, lparam):
-            if msg == 0x0002:  # WM_DESTROY
-                # if child exists, destroy it
-                child = NativePreview.user32.GetWindow(hwnd, 5)  # GW_CHILD = 5
-                if child: NativePreview.user32.DestroyWindow(child)
-                try: NativePreview._open_hwnds.remove(hwnd)
-                except ValueError: pass
-                return 0
-            if msg == 0x0010:  # WM_CLOSE
-                NativePreview.user32.DestroyWindow(hwnd)
-                return 0
-            return NativePreview.user32.DefWindowProcW(hwnd, msg, wparam, lparam)
-        NativePreview._wndprocs.append(host_wndproc)
-
-        wc = WNDCLASSW()
-        wc.lpfnWndProc = host_wndproc
-        wc.lpszClassName = "RSRC_DLG_HOST"
-        wc.hInstance = NativePreview._get_hinstance()
-        NativePreview.user32.RegisterClassW(ctypes.byref(wc))
-
-        WS_OVERLAPPEDWINDOW = 0x00CF0000
-        hwnd = NativePreview.user32.CreateWindowExW(0, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW,
-                                                    200, 200, 500, 400, None, None, wc.hInstance, None)
-        if not hwnd:
-            return False
-
-        # Create the dialog modeless as a child of the host
-        @NativePreview.DLGPROC
-        def dlg_proc(hDlg, msg, wParam, lParam):
-            if msg == 0x0010 or (msg == 0x0100 and wParam == 27):  # WM_CLOSE / ESC
-                NativePreview.user32.DestroyWindow(hDlg); return 1
-            return 0
-        NativePreview._dlgprocs.append(dlg_proc)
-
-        lp = NativePreview._va_alloc_copy(template_bytes)
-        hdlg = NativePreview.user32.CreateDialogIndirectParamW(NativePreview._get_hinstance(), lp, hwnd, dlg_proc, 0)
-        if hdlg:
-            # Resize host to fit dialog
-            rect = ctypes.wintypes.RECT()
-            NativePreview.user32.GetWindowRect(hdlg, ctypes.byref(rect))
-            w = rect.right - rect.left; h = rect.bottom - rect.top
-            NativePreview.user32.SetWindowTextW(hwnd, title)
-            NativePreview.user32.ShowWindow(hdlg, 1)
-            NativePreview.user32.ShowWindow(hwnd, 1)
-            NativePreview.user32.SetWindowPos(hwnd, None, 200, 200, max(300, w+40), max(200, h+80), 0)
-            NativePreview._open_hwnds.append(hwnd)
-            return True
-
-        # fallback: destroy empty host
-        NativePreview.user32.DestroyWindow(hwnd)
-        return False
-
-    @staticmethod
-    def close_all_previews():
-        # Destroy any host/menu windows we created
-        for h in list(NativePreview._open_hwnds):
-            try:
-                NativePreview.user32.DestroyWindow(h)
-            except Exception:
-                pass
-        NativePreview._open_hwnds.clear()
+    _open       = []
+    _host_atom  = 0
+    _host_class = None
 
     @staticmethod
     def _va_alloc_copy(data: bytes) -> int:
-        sz = ctypes.c_size_t(len(data))
+        sz  = ctypes.c_size_t(len(data))
         ptr = NativePreview.kernel32.VirtualAlloc(None, sz,
-                        NativePreview.MEM_COMMIT | NativePreview.MEM_RESERVE,
-                        NativePreview.PAGE_READWRITE)
+                         NativePreview.MEM_COMMIT | NativePreview.MEM_RESERVE,
+                         NativePreview.PAGE_READWRITE)
         if not ptr:
             raise OSError("VirtualAlloc failed")
         ctypes.memmove(ptr, data, sz.value)
         NativePreview._allocs.append((ptr, sz.value))
         return ptr
 
-
-
     @staticmethod
     def _get_hinstance():
         try:
             return _wt.HINSTANCE(int(idaapi.get_kernel_module()))
         except Exception:
-            return None
+            return NativePreview.kernel32.GetModuleHandleW(None)
 
-    # -------- Dialogs --------
+    @staticmethod
+    @WNDPROC_T
+    def _host_wndproc(hwnd, msg, wparam, lparam):
+        WM_DESTROY = 0x0002
+        if msg == WM_DESTROY:
+            GW_CHILD = 5
+            child = NativePreview.user32.GetWindow(hwnd, GW_CHILD)
+            if child:
+                NativePreview.user32.DestroyWindow(child)
+            return 0
+        return NativePreview.user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    @staticmethod
+    def _create_host_window(hInst, title):
+        if not NativePreview._host_atom:
+            wc = WNDCLASSW()
+            wc.style = 0
+            wc.lpfnWndProc  = NativePreview._host_wndproc
+            wc.cbClsExtra   = 0
+            wc.cbWndExtra   = 0
+            wc.hInstance    = hInst
+            wc.hIcon        = None
+            wc.hCursor      = None
+            wc.hbrBackground= ctypes.c_void_p(5)  # COLOR_WINDOW+1
+            wc.lpszMenuName = None
+            NativePreview._host_class = f"IDA_RSRC_PREVIEW_HOST_{os.getpid()}"
+            wc.lpszClassName = NativePreview._host_class
+            atom = NativePreview.user32.RegisterClassW(ctypes.byref(wc))
+            if not atom:
+                atom = 1
+            NativePreview._host_atom = atom
+
+        WS_OVERLAPPEDWINDOW = 0x00CF0000
+        WS_VISIBLE      = 0x10000000
+        WS_CLIPCHILDREN = 0x02000000
+        WS_EX_TOOLWINDOW= 0x00000080
+
+        hwnd = NativePreview.user32.CreateWindowExW(
+            WS_EX_TOOLWINDOW,
+            NativePreview._host_class, title,
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VISIBLE,
+            100, 100, 420, 320,
+            None, None, hInst, None
+        )
+        return hwnd
+
+    @staticmethod
+    def _register_preview(host_hwnd, child_hwnd):
+        NativePreview._open.append((host_hwnd, child_hwnd))
+
+    @staticmethod
+    def close_all_previews():
+        for host, dlg in reversed(NativePreview._open):
+            try:
+                if dlg:
+                    NativePreview.user32.DestroyWindow(dlg)
+            finally:
+                if host:
+                    NativePreview.user32.DestroyWindow(host)
+        NativePreview._open.clear()
+
+        @staticmethod
+        def preview_dialog_hosted(raw_tmpl: bytes, title: str = "Dialog Preview") -> bool:
+            hInst = NativePreview._get_hinstance()
+            host  = NativePreview._create_host_window(hInst, title)
+            if not host:
+                return False
+
+            # Create a normal dialog (top-level popup)
+            dlg = NativePreview.user32.CreateDialogIndirectParamW(
+                hInst,
+                ctypes.cast(raw_tmpl, ctypes.c_void_p),
+                host,           # owner, ignored for childness
+                DLGPROC_T(0),
+                0
+            )
+            if not dlg:
+                NativePreview.user32.DestroyWindow(host)
+                return False
+
+            # Flip WS_POPUP -> WS_CHILD and reparent into host
+            style = NativePreview.user32.GetWindowLongPtrW(dlg, NativePreview.GWL_STYLE)
+            style = (style | NativePreview.WS_CHILD) & ~NativePreview.WS_POPUP
+            NativePreview.user32.SetWindowLongPtrW(dlg, NativePreview.GWL_STYLE, style)
+            NativePreview.user32.SetParent(dlg, host)
+            NativePreview.user32.SetWindowPos(
+                dlg, None, 0, 0, 0, 0,
+                NativePreview.SWP_NOZORDER | NativePreview.SWP_NOMOVE | NativePreview.SWP_FRAMECHANGED
+            )
+
+            # Show dialog so it computes its real pixel size
+            NativePreview.user32.ShowWindow(dlg, 5)   # SW_SHOW
+            NativePreview.user32.UpdateWindow(dlg)
+
+            # Fit host to the dialog?s current outer size
+            rc = _wt.RECT()
+            if NativePreview.user32.GetWindowRect(dlg, ctypes.byref(rc)):
+                width  = rc.right  - rc.left
+                height = rc.bottom - rc.top
+            else:
+                width, height = 320, 200
+
+            NativePreview.user32.SetWindowPos(
+                host, None, 0, 0,
+                max(160, width + 16), max(120, height + 16),
+                NativePreview.SWP_NOZORDER | NativePreview.SWP_NOACTIVATE
+            )
+            # Slam child to 0,0 inside host client and redraw
+            NativePreview.user32.MoveWindow(dlg, 0, 0, width, height, True)
+            NativePreview.user32.RedrawWindow(dlg, None, None,
+                NativePreview.RDW_INVALIDATE | NativePreview.RDW_ALLCHILDREN | NativePreview.RDW_ERASE)
+
+            NativePreview.user32.ShowWindow(host, 5)
+            NativePreview._register_preview(host, dlg)
+            return True
+
+
+    # -------- dialog: modeless fallback --
     @staticmethod
     def preview_dialog_modeless(template_bytes: bytes, title="Dialog Preview") -> bool:
-        # Fallback modeless (we prefer modal threaded below)
         @NativePreview.DLGPROC
         def dlg_proc(hDlg, msg, wParam, lParam):
             if msg == 0x0010:  # WM_CLOSE
@@ -784,58 +888,59 @@ class NativePreview:
             if msg == 0x0100 and wParam == 27:  # VK_ESCAPE
                 NativePreview.user32.EndDialog(hDlg, 0); return 1
             return 0
+
         NativePreview._dlgprocs.append(dlg_proc)
         lp = NativePreview._va_alloc_copy(template_bytes)
         hwnd = NativePreview.user32.CreateDialogIndirectParamW(NativePreview._get_hinstance(), lp, None, dlg_proc, 0)
-        if hwnd:
-            NativePreview.user32.SetWindowTextW(hwnd, title)
-            NativePreview.user32.ShowWindow(hwnd, 1)
-            # drive a tiny pump on a timer so controls render
-            def pump_once():
-                msg = _wt.MSG()
-                while NativePreview.user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
-                    NativePreview.user32.TranslateMessage(ctypes.byref(msg))
-                    NativePreview.user32.DispatchMessageW(ctypes.byref(msg))
-            # wire a Qt timer so IDA keeps breathing
-            try:
-                from PySide6 import QtCore
-                t = QtCore.QTimer()
-                t.setInterval(10)
-                t.timeout.connect(pump_once)
-                t.start()
-            except Exception:
-                pass
-            return True
-        return False
+        if not hwnd:
+            return False
 
+        NativePreview.user32.SetWindowTextW(hwnd, title)
+        NativePreview.user32.ShowWindow(hwnd, 1)
+
+        # Tiny pump via Qt timer so controls render in IDA?s mixed loop
+        def pump_once():
+            msg = _wt.MSG()
+            while NativePreview.user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+                NativePreview.user32.TranslateMessage(ctypes.byref(msg))
+                NativePreview.user32.DispatchMessageW(ctypes.byref(msg))
+        try:
+            from PySide6 import QtCore
+            t = QtCore.QTimer()
+            t.setInterval(10)
+            t.timeout.connect(pump_once)
+            t.start()
+        except Exception:
+            pass
+        return True
+
+    # -------- dialog: modal (worker thr) -
     @staticmethod
     def preview_dialog_modal_threaded(template_bytes: bytes, title="Dialog Preview") -> bool:
-        # Correct way: modal dialog so User32 runs the loop, but on a worker thread.
         @NativePreview.DLGPROC
         def dlg_proc(hDlg, msg, wParam, lParam):
             if msg == 0x0010 or (msg == 0x0100 and wParam == 27):
                 NativePreview.user32.EndDialog(hDlg, 0); return 1
             return 0
+
         NativePreview._dlgprocs.append(dlg_proc)
-        lp = NativePreview._va_alloc_copy(template_bytes)
+        lp    = NativePreview._va_alloc_copy(template_bytes)
         hinst = NativePreview._get_hinstance()
 
         def worker():
-            # Title set after creation via WM_INITDIALOG is messy across templates; just set once shown
-            ret = NativePreview.user32.DialogBoxIndirectParamW(hinst, lp, None, dlg_proc, 0)
-            # ret ignored; dialog ended
-            return
+            NativePreview.user32.DialogBoxIndirectParamW(hinst, lp, None, dlg_proc, 0)
 
         th = threading.Thread(target=worker, name="rsrc-dialog-preview", daemon=True)
         th.start()
         return True
 
-    # -------- Menus --------
+    # -------- menu preview window --------
     @staticmethod
     def preview_menu_window(menu_bytes: bytes, title="Menu Preview") -> bool:
         hmenu = NativePreview.user32.LoadMenuIndirectW(NativePreview._va_alloc_copy(menu_bytes))
         if not hmenu:
             return False
+
         @NativePreview.WNDPROC
         def wndproc(hwnd, msg, wparam, lparam):
             if msg == 0x0010:  # WM_CLOSE
@@ -848,28 +953,31 @@ class NativePreview:
                     pass
                 return 0
             return NativePreview.user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
         NativePreview._wndprocs.append(wndproc)
 
         wc = WNDCLASSW()
         wc.style = 0
-        wc.lpfnWndProc = wndproc
-        wc.cbClsExtra = 0
-        wc.cbWndExtra = 0
-        wc.hInstance   = NativePreview._get_hinstance()
-        wc.hIcon = None
-        wc.hCursor = None
-        wc.hbrBackground = None
-        wc.lpszMenuName  = None
-        wc.lpszClassName = "RSRC_MENU_PREVIEW"
+        wc.lpfnWndProc  = wndproc
+        wc.cbClsExtra   = 0
+        wc.cbWndExtra   = 0
+        wc.hInstance    = NativePreview._get_hinstance()
+        wc.hIcon        = None
+        wc.hCursor      = None
+        wc.hbrBackground= None
+        wc.lpszMenuName = None
+        wc.lpszClassName= "RSRC_MENU_PREVIEW"
         NativePreview.user32.RegisterClassW(ctypes.byref(wc))
 
         WS_OVERLAPPEDWINDOW = 0x00CF0000
-        hwnd = NativePreview.user32.CreateWindowExW(0, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW,
-                                                    200, 200, 600, 400, None, None, wc.hInstance, None)
+        hwnd = NativePreview.user32.CreateWindowExW(
+            0, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW,
+            200, 200, 600, 400, None, None, wc.hInstance, None
+        )
         if not hwnd:
             return False
-        NativePreview._open_hwnds.append(hwnd)
 
+        NativePreview._open_hwnds.append(hwnd)
         NativePreview.user32.SetMenu(hwnd, hmenu)
         NativePreview.user32.ShowWindow(hwnd, 1)
         NativePreview.user32.UpdateWindow(hwnd)
@@ -1025,7 +1133,10 @@ class MainWin(QtWidgets.QMainWindow):
         tb.addAction(act_close)
 
         self.current_res = None
+        self._last_render_key = None      # (type_id, name_id_or_str, lang, data_rva, size)
+        self._render_guard = False
         self.index_rt_maps()
+        
     def _decode_monochrome_cursor(self, blob: bytes) -> QtGui.QImage | None:
         """
         Decode classic RT_CURSOR payload:
@@ -1130,13 +1241,26 @@ class MainWin(QtWidgets.QMainWindow):
         return self.model.itemFromIndex(idx)
 
     def _on_any_selection_event(self, *args):
+        if self._render_guard:
+            return
         item = self._get_selected_item_col0()
         if not item:
             return
         r = item.data()
-        if isinstance(r, ResData):
+        if not isinstance(r, ResData):
+            return
+        # Debounce identical resource picked by overlapping signals
+        key = (r.type_id, r.name_id if r.name_id is not None else r.name_str, r.lang, r.data_rva, r.size)
+        if key == self._last_render_key:
+            return
+        self._last_render_key = key
+        try:
+            self._render_guard = True
             self.current_res = r
             self.render_res(r)
+        finally:
+            self._render_guard = False
+
 
     def _on_current_changed(self, new_idx, old_idx):
         self._on_any_selection_event()
@@ -1406,16 +1530,48 @@ class MainWin(QtWidgets.QMainWindow):
                 self.show_text("\n".join(lines))
 
             elif t == "DIALOG":
+                # hard kill any floating-preview paths that draw controls
+                try:
+                    self.imagePane.setVisible(False)
+                    self.tablePane.setVisible(False)
+                    self.textPane.setVisible(True)   # only show RC text
+                    self.clear_any_qt_overlay_widgets()  # no-ops if you don?t have this
+                except Exception:
+                    pass
+
+                # show RC dump for context only
                 rc = rc_dump_dialog(r.raw)
                 self.show_text(rc)
-                if not NativePreview.preview_dialog_hosted(r.raw, title=f"Dialog: {r.name_str or r.name_id}"):
-                    if not NativePreview.preview_dialog_modal_threaded(r.raw, title=f"Dialog: {r.name_str or r.name_id}"):
-                        NativePreview.preview_dialog_modeless(r.raw, title=f"Dialog: {r.name_str or r.name_id}")
+
+                # ensure we close prior native previews
+                try:
+                    NativePreview.close_all_previews()
+                except Exception:
+                    pass
+
+                # use hosted native dialog only
+                ok = NativePreview.preview_dialog_hosted(
+                    r.raw,
+                    title=f"Dialog: {r.name_str or r.name_id}"
+                )
+                if not ok:
+                    self.show_text("Dialog preview failed (malformed template or missing ACCEL/CLASS).")
+
+
 
             elif t == "MENU":
+                # Close previously opened preview windows so we don't spawn multiples
+                try:
+                    NativePreview.close_all_previews()
+                except Exception:
+                    pass
+
                 rc = rc_dump_menu(r.raw)
                 self.show_text(rc)
-                NativePreview.preview_menu_window(r.raw, title=f"Menu: {r.name_str or r.name_id}")
+                if not NativePreview.preview_menu_window(
+                    r.raw, title=f"Menu: {r.name_str or r.name_id}"
+                ):
+                    self.show_text("Menu preview failed (template may be malformed).")
 
             else:
                 self.show_text(f"{t} size={r.size}\n\n{r.raw[:256].hex(' ')}" + (" ..." if r.size > 256 else ""))
