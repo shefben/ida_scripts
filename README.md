@@ -23,7 +23,7 @@ No struct APIs, no dependencies, no nonsense.
 
 In IDA:
 ```python
-File → Script file… → select rsrc_full_parser_ida92_nostructs.py
+File → Script file… → select rsrc_parser.py
 ```
 or paste in the console:
 ```python
