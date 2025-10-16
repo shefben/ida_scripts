@@ -726,5 +726,33 @@ def run():
     parse_resource_dir(rstart, [])
     log("=== Done. Struct-less, tear-free. ===")
 
+def _format_rsrc_entry():
+    try:
+        run()
+    except NameError:
+        # If your script uses a different entrypoint, rename this call accordingly
+        raise
+    except Exception as e:
+        ida_kernwin.warning(f"format_rsrc failed: {e}")
+
+class format_rsrc_plugin_t(idaapi.plugin_t):
+    flags = idaapi.PLUGIN_KEEP
+    comment = "Format/annotate the .rsrc tree"
+    help = "Walks the resource directory, names nodes, defines bytes/strings, adds comments"
+    wanted_name = "Format .rsrc"
+    wanted_hotkey = "Ctrl-Alt-F"
+
+    def init(self):
+        return idaapi.PLUGIN_KEEP
+
+    def run(self, arg):
+        _format_rsrc_entry()
+
+    def term(self):
+        pass
+
+def PLUGIN_ENTRY():
+    return format_rsrc_plugin_t()
+    
 if __name__ == "__main__":
     run()
