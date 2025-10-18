@@ -1,3 +1,5 @@
+***NOTE: This is still VERY WIP!  Feel free to put in Pull requests if you fix, improve or add something!***
+
 # IDA Resource Tools
 
 This repository contains two complementary IDA Pro 9.2 scripts for working with the `.rsrc` section of Windows PE binaries.  
