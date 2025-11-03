@@ -22,6 +22,10 @@ Together, they allow both **formatting and visualization** of Windows resources 
   <a href="previews/gui_annotation.png" title="gui_annotation preview (full size)">
     <img src="previews/gui_annotation.png" alt="gui_annotation preview" width="420">
   </a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="previews/second_pass.png" title="second_pass preview (full size)">
+    <img src="previews/second_pass.png" alt="second_pass preview" width="420">
+  </a>
 </p>
 
 - Click either thumbnail to open the full-size image.
@@ -69,6 +73,39 @@ It bridges `.rsrc` parsing with code analysis to reveal how GUI components conne
 - Integrates with Hex-Rays to show GUI comments inline in pseudocode when available.  
 - Can be run as an **IDA plugin** or a **stand-alone script**, requiring no external dependencies.  
 - Designed for performance and readability, enhancing disassembly clarity when reverse engineering GUI-heavy Windows binaries.
+
+---
+
+### `ultrafixup_second_pass.py`
+An **IDA 9.2 second-pass auto-analysis enhancer** designed to deepen and repair initial program analysis.  
+It identifies missing functions, decodes previously unknown code regions, recovers overlooked strings, and generates structured vtable types for cleaner and more meaningful reverse-engineering output.
+
+**Key features**
+- Iteratively expands undefined executable areas into valid instructions.  
+- Detects prolog-based and linear-flow functions and automatically creates them.  
+- Reanalyzes discovered functions to stabilize stack, prolog, and flow metadata.  
+- Locates and defines missed ASCII and UTF-16 string literals.  
+- Finds contiguous virtual function pointer tables and generates proper struct types.  
+- Applies vtable structures and names function pointers for improved clarity.  
+- Executes multiple passes until no further analysis progress is detected.  
+- Operates entirely within IDA using official 9.2 APIs; no external dependencies.  
+
+---
+
+### `mfc_afx_rebuilder_ida92_fast_rtti_mfc.py`
+A **high-performance MFC/AFX vtable and instance rebuilder** for IDA 9.2.  
+It performs block-level vtable discovery, resolves MSVC RTTI names, correlates MFC `CRuntimeClass` metadata, defines vtable structs, types object instances, and annotates `.rsrc`-based resource IDs and operands.
+
+**Key features**
+- Fast block-scan detection of vtables in `.rdata` / `.data` segments.  
+- Confirms vtable heads via live executable range checks and function validation.  
+- Builds and injects struct types for vtables & object instances with batch Local Types.  
+- Recovers class names using MSVC RTTI; maps to MFC `CRuntimeClass` when present.  
+- Finds and types vptr instances across data segments and reloc/xref tables.  
+- Adds comments & operand offsets for `.rsrc` resource IDs (`IDC`/`IDD`/`IDR` etc.).  
+- Optional Hex-Rays integration to name virtual functions by decompilation.  
+- Caches processed vtables to avoid reprocessing in future sessions.  
+- Optimized for large GUI executables (including legacy MFC apps).  
 
 ---
 
