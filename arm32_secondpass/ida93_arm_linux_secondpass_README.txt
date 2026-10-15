@@ -1,38 +1,56 @@
 IDA 9.3 ARM Linux Second Pass Plugin
-=====================================
+====================================
 
-File:
-  ida93_arm_linux_secondpass.py
+Version: 1.4.0
+Target: IDA Pro 9.3, Python 3.13, ARM/AArch64 Linux ELF binaries
 
-Install:
-  Copy ida93_arm_linux_secondpass.py into your IDA 9.3 plugins directory, then restart IDA.
+Install
+-------
+Copy ida93_arm_linux_secondpass.py into your IDA 9.3 plugins directory, restart IDA, then run:
 
-Run:
-  Edit -> Plugins -> ARM Linux Second Pass
-  Hotkey: Ctrl-Alt-Shift-A
+    Edit -> Plugins -> ARM Linux Second Pass
 
-Script-mode test:
-  File -> Script file... -> select ida93_arm_linux_secondpass.py
+Or run once with:
 
-What it recovers:
-  - Entry/export functions
-  - Named executable labels not already converted to functions
-  - Relocation/fixup-derived function pointers
-  - ARM32 .ARM.exidx PREL31 function starts
-  - .eh_frame_hdr FDE function starts for common Linux DW_EH_PE encodings
-  - Data-segment code pointers, including Thumb-bit normalization on ARM32
-  - Itanium C++ ABI-style vtables
-  - Raw function-pointer tables
-  - Missed ASCII and UTF-16 C strings
-  - Conservative AArch64, ARM, and Thumb prologue sweep candidates
-  - Pointer-sized data items, offset operands, and data xrefs
+    File -> Script file... -> ida93_arm_linux_secondpass.py
 
-Output:
-  - IDA database modifications: functions, strings, pointer data, names, xrefs
-  - JSON report beside the IDB: <database>.secondpass_report.json
+Hotkey
+------
+Ctrl+Alt+Shift+A
 
-Notes:
-  - The plugin is intentionally conservative about not splitting existing functions.
-  - It avoids clobbering code and existing non-byte data during string creation.
-  - For ARM32 Thumb function pointers, it clears the low bit and attempts to set the T segment register at the target.
-  - If you want more aggressive scanning, edit SecondPassConfig at the top of the file.
+Important v1.4.0 string-safety changes
+--------------------------------------
+This build protects existing string literals from broad rescans and red cleanup:
+
+* Existing string literals are not deleted/recreated during string recovery.
+* Ranges overlapping existing strings are skipped by string creation and alignment/byte fallback.
+* `ida_strlist.clear_strlist()` is disabled by default.
+* Aggressive red cleanup remains disabled by default.
+* Unknown-byte fallback remains disabled by default.
+* The run confirmation dialog now displays the actual plugin version and string-safe mode notice.
+* The JSON report and summary include string-safety counters.
+
+Useful config defaults
+----------------------
+Inside SecondPassConfig:
+
+    audit_decompile_current_functions = False
+    audit_rebuild_undecompilable_functions = False
+    clear_string_list_before_rebuild = False
+    red_cleanup_make_remaining_bytes = False
+    red_cleanup_aggressive_final_sweep = False
+    red_cleanup_forget_unresolved_problem_markers = False
+    never_delete_existing_strings = True
+
+Outputs
+-------
+When enabled, the plugin writes this report beside the IDB:
+
+    <database>.secondpass_report.json
+
+Rescue script
+-------------
+If an older build damaged your Strings window, run ida93_string_rescue.py once through:
+
+    File -> Script file... -> ida93_string_rescue.py
+
